@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Aquamarine — Web Assistant</title>
+
+<!-- Security hardening for a static client app -->
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none';
+           connect-src https://api.github.com https://generativelanguage.googleapis.com;
+           script-src 'self';
+           style-src 'self' 'unsafe-inline';
+           img-src data: https:;
+           font-src 'self';
+           base-uri 'none';
+           frame-ancestors 'none';
+           form-action 'self'">
+<meta name="referrer" content="no-referrer" />
+<meta http-equiv="Permissions-Policy"
+  content="camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(self)" />
+
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; margin: 24px auto; max-width: 1100px; }
+  h1 { margin: 0 0 12px; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .bar input, textarea { padding:10px; }
+  textarea { width:100%; }
+  button { padding:10px 14px; cursor:pointer; }
+  .card { border:1px solid #e5e7eb; border-radius:12px; padding:12px; margin:12px 0; }
+  pre { white-space: pre-wrap; background:#0b1020; color:#d9e0ff; padding:12px; border-radius:8px; overflow:auto; }
+  .cols { display:grid; gap:12px; grid-template-columns: 1fr 1fr; }
+  .muted { color:#6b7280; font-size: 14px; }
+  .ok { color:#059669; }
+  .warn { color:#b45309; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<h1>💎 Aquamarine — Web Assistant</h1>
+<p class="muted">Chat • Notebook • Agent (plan→execute→critic) • GitHub commit/PR into <b>youGrowgirl90/Agent-Monstera</b> (private)</p>
+
+<div class="card">
+  <h3>Setup (stored only in your browser)</h3>
+  <div class="cols">
+    <label>Google AI Studio (Gemini) API key<br/>
+      <input id="geminiKey" placeholder="AI Studio key (required for chat/agent)" style="width:100%"/>
+    </label>
+    <label>GitHub Token (fine-grained, repo scope)<br/>
+      <input id="ghToken" placeholder="Optional — enables commits/PRs" style="width:100%"/>
+    </label>
+  </div>
+  <div class="cols">
+    <label>GitHub Repo (owner/name)<br/>
+      <input id="ghRepo" value="youGrowgirl90/Agent-Monstera" style="width:100%"/>
+    </label>
+    <label>Base Branch<br/>
+      <input id="ghBranch" value="main" style="width:100%"/>
+    </label>
+  </div>
+  <div class="bar">
+    <button onclick="saveCfg()">Save</button>
+    <span id="cfgMsg" class="ok"></span>
+  </div>
+  <p class="warn">Keys are stored in this browser’s localStorage only. For production, move secrets server-side.</p>
+</div>
+
+<div class="card">
+  <div class="bar">
+    <button onclick="showTab('chat')">Chat</button>
+    <button onclick="showTab('notebook')">Notebook</button>
+    <button onclick="showTab('agent')">Agent</button>
+    <span id="health" class="muted"></span>
+  </div>
+</div>
+
+<!-- CHAT -->
+<div id="tab-chat" class="card" style="display:block;">
+  <h3>Chat</h3>
+  <div class="bar">
+    <input id="chatInput" placeholder="Ask Aquamarine anything…" style="flex:1;"/>
+    <button onclick="sendChat()">Send</button>
+  </div>
+  <div id="chatLog" class="mono" style="margin-top:8px;"></div>
+</div>
+
+<!-- NOTEBOOK -->
+<div id="tab-notebook" class="card" style="display:none;">
+  <h3>Notebook (JS cells)</h3>
+  <div class="bar">
+    <button onclick="addCell()">+ Add Cell</button>
+    <button onclick="runAll()">Run All</button>
+  </div>
+  <div id="cells"></div>
+</div>
+
+<!-- AGENT -->
+<div id="tab-agent" class="card" style="display:none;">
+  <h3>Agent — plan → execute → critic</h3>
+  <label>Goal</label>
+  <textarea id="agentGoal" rows="3">Add CI badge and improve README for Agent Monstera.</textarea>
+  <div class="bar">
+    <button onclick="agentPlan()">Plan</button>
+    <button id="btnExec" onclick="agentExecute()" disabled>Execute</button>
+    <button id="btnCritic" onclick="agentCritic()" disabled>Critic</button>
+    <label style="margin-left:auto;"><input type="checkbox" id="autoChain"/> Autonomous</label>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h4>Plan</h4>
+      <pre id="agentPlanOut"></pre>
+    </div>
+    <div>
+      <h4>Proposed Patch</h4>
+      <pre id="agentPatchOut"></pre>
+    </div>
+  </div>
+  <div style="margin-top:12px;">
+    <h4>Critic Review</h4>
+    <pre id="agentReviewOut"></pre>
+  </div>
+
+  <div class="card">
+    <h4>GitHub (commit & PR)</h4>
+    <div class="cols">
+      <label>New branch name<br/><input id="ghWorkBranch" value="aquamarine-auto" style="width:100%"/></label>
+      <label>File path to write<br/><input id="ghWritePath" value="README.md" style="width:100%"/></label>
+    </div>
+    <div class="bar" style="margin-top:8px;">
+      <button onclick="commitExample()">Commit example README</button>
+      <button onclick="openPR()">Open PR</button>
+      <span class="muted">Requires GitHub token.</span>
+    </div>
+    <pre id="ghOut" style="margin-top:8px;"></pre>
+  </div>
+</div>
+
+<script>
+/* ---------- tiny state ---------- */
+const S = {
+  geminiKey: localStorage.getItem('geminiKey') || '',
+  ghToken: localStorage.getItem('ghToken') || '',
+  ghRepo: localStorage.getItem('ghRepo') || 'youGrowgirl90/Agent-Monstera',
+  ghBranch: localStorage.getItem('ghBranch') || 'main'
+};
+document.getElementById('geminiKey').value = S.geminiKey;
+document.getElementById('ghToken').value = S.ghToken;
+document.getElementById('ghRepo').value = S.ghRepo;
+document.getElementById('ghBranch').value = S.ghBranch;
+document.getElementById('health').textContent =
+  (S.geminiKey ? "Gemini ✓" : "Gemini ⚠︎ key missing") + " • " + (S.ghToken ? "GitHub ✓" : "GitHub (optional)");
+
+function saveCfg(){
+  S.geminiKey = document.getElementById('geminiKey').value.trim();
+  S.ghToken   = document.getElementById('ghToken').value.trim();
+  S.ghRepo    = document.getElementById('ghRepo').value.trim();
+  S.ghBranch  = document.getElementById('ghBranch').value.trim();
+  localStorage.setItem('geminiKey', S.geminiKey);
+  localStorage.setItem('ghToken', S.ghToken);
+  localStorage.setItem('ghRepo', S.ghRepo);
+  localStorage.setItem('ghBranch', S.ghBranch);
+  document.getElementById('cfgMsg').textContent = "Saved.";
+  document.getElementById('health').textContent =
+    (S.geminiKey ? "Gemini ✓" : "Gemini ⚠︎ key missing") + " • " + (S.ghToken ? "GitHub ✓" : "GitHub (optional)");
+  setTimeout(()=>document.getElementById('cfgMsg').textContent="", 1500);
+}
+function showTab(id){ ["chat","notebook","agent"].forEach(t =>
+  document.getElementById(`tab-${t}`).style.display = (t===id)?"block":"none"); }
+
+/* ---------- Gemini helpers ---------- */
+async function gemini(prompt){
+  if(!S.geminiKey){ alert("Add your Google AI Studio key first."); return ""; }
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key="+encodeURIComponent(S.geminiKey);
+  const r = await fetch(url, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ contents:[{ parts:[{ text: prompt }]}] })
+  });
+  const j = await r.json();
+  return j?.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(j, null, 2);
+}
+
+/* ---------- Chat ---------- */
+function esc(s){return s.replace(/[<>&]/g,c=>({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));}
+function logChat(role, text){
+  const div = document.createElement('div');
+  div.innerHTML = `<b>${role}:</b> <span>${esc(text)}</span>`;
+  document.getElementById('chatLog').appendChild(div);
+}
+async function sendChat(){
+  const inp = document.getElementById('chatInput');
+  const q = inp.value.trim(); if(!q) return;
+  logChat("you", q); inp.value="";
+  const a = await gemini(q);
+  logChat("aquamarine", a);
+}
+
+/* ---------- Notebook (JS, client-side only) ---------- */
+function addCell(initial=""){
+  const id = Math.random().toString(36).slice(2);
+  const wrap = document.createElement('div');
+  wrap.className="card";
+  wrap.innerHTML = `
+    <textarea id="code-${id}" rows="6" style="width:100%; padding:10px;">${initial}</textarea>
+    <div class="bar" style="margin-top:8px;">
+      <button onclick="runCell('${id}')">Run</button>
+      <span class="muted">Runs in this page (no server). Avoid secrets.</span>
+    </div>
+    <pre id="out-${id}"></pre>`;
+  document.getElementById('cells').appendChild(wrap);
+}
+function runAll(){ document.querySelectorAll('[id^=code-]').forEach(el=>runCell(el.id.replace('code-',''))); }
+function runCell(id){
+  const code = document.getElementById('code-'+id).value;
+  try {
+    const result = Function(`"use strict"; ${code}`)();
+    document.getElementById('out-'+id').textContent = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  } catch(e){ document.getElementById('out-'+id).textContent = "Error: " + e.message; }
+}
+
+/* ---------- Agent: plan → execute → critic ---------- */
+async function agentPlan(){
+  const goal = document.getElementById('agentGoal').value.trim();
+  if(!goal) return;
+  const plan = await gemini(
+`You are Aquamarine. Goal: ${goal}
+Return JSON with keys: analyze[], changes[], checks[], pr_summary{title,body}. Keep it concise.`);
+  document.getElementById('agentPlanOut').textContent = plan;
+  document.getElementById('btnExec').disabled = false;
+  if (document.getElementById('autoChain').checked) agentExecute();
+}
+async function agentExecute(){
+  const goal = document.getElementById('agentGoal').value.trim();
+  const plan = document.getElementById('agentPlanOut').textContent.trim();
+  const patch = await gemini(
+`Generate a unified diff patch ONLY (no commentary) to implement this goal and plan.
+
+GOAL:
+${goal}
+
+PLAN:
+${plan}`);
+  document.getElementById('agentPatchOut').textContent = patch;
+  document.getElementById('btnCritic').disabled = false;
+  if (document.getElementById('autoChain').checked) agentCritic();
+}
+async function agentCritic(){
+  const patch = document.getElementById('agentPatchOut').textContent.trim();
+  const review = await gemini(
+`Review this patch for bugs, security, and style. Return JSON: {"risks":[],"fixes":[],"approve":true/false}
+
+PATCH:
+${patch}`);
+  document.getElementById('agentReviewOut').textContent = review;
+}
+
+/* ---------- GitHub: commit & PR into your PRIVATE repo ---------- */
+async function commitExample(){
+  if(!S.ghToken){ alert("Add your GitHub token first."); return; }
+  const repo = document.getElementById('ghRepo').value.trim();
+  const baseBranch = document.getElementById('ghBranch').value.trim();
+  const newBranch = document.getElementById('ghWorkBranch').value.trim() || "aquamarine-auto";
+  const path = document.getElementById('ghWritePath').value.trim();
+  const content = "# Agent Monstera\n\nThis README was updated by Aquamarine.\n";
+  const out = document.getElementById('ghOut');
+
+  try {
+    const [owner, name] = repo.split("/");
+    const ref = await gh(`/repos/${owner}/${name}/git/ref/heads/${baseBranch}`);
+    const baseSha = ref.object.sha;
+    await gh(`/repos/${owner}/${name}/git/refs`, "POST", { ref:`refs/heads/${newBranch}`, sha: baseSha });
+
+    let sha=null;
+    try {
+      const f = await gh(`/repos/${owner}/${name}/contents/${encodeURIComponent(path)}?ref=${newBranch}`);
+      sha = f.sha;
+    } catch(_) {}
+
+    await gh(`/repos/${owner}/${name}/contents/${encodeURIComponent(path)}`, "PUT", {
+      message: "docs: update README with Aquamarine",
+      content: b64(content),
+      branch: newBranch,
+      sha
+    });
+    out.textContent = "Committed to branch " + newBranch;
+  } catch(e){
+    out.textContent = "Commit failed: " + (e.message||e);
+  }
+}
+
+async function openPR(){
+  if(!S.ghToken){ alert("Add your GitHub token first."); return; }
+  const repo = document.getElementById('ghRepo').value.trim();
+  const baseBranch = document.getElementById('ghBranch').value.trim();
+  const head = document.getElementById('ghWorkBranch').value.trim() || "aquamarine-auto";
+  const [owner, name] = repo.split("/");
+  const r = await gh(`/repos/${owner}/${name}/pulls`, "POST", {
+    title: "Aquamarine improvements",
+    body: "Automated changes",
+    head, base: baseBranch
+  });
+  document.getElementById('ghOut').textContent = "PR opened: " + r.html_url;
+}
+
+function b64(s){ return btoa(unescape(encodeURIComponent(s))); }
+async function gh(path, method="GET", body){
+  const r = await fetch("https://api.github.com"+path, {
+    method,
+    headers: {
+      "Authorization": "Bearer " + S.ghToken,
+      "Accept": "application/vnd.github+json",
+      "Content-Type": "application/json"
+    },
+    body: method==="GET" ? undefined : JSON.stringify(body)
+  });
+  if(!r.ok){ throw new Error(await r.text()); }
+  return r.json();
+}
+</script>
+</body>
+</html>
